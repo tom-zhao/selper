@@ -141,8 +141,6 @@ class selper(object):
         self.config_file = config_file
         self.service_holders = self.get_services(config_file)
         self.start_all()
-        for p in self.service_holders:
-            print p.get_name, p.is_service, p.status()
 
     def reload(self, signum, frame):
         self.stop_all()
@@ -172,7 +170,6 @@ class selper(object):
                     send_prompt  = "%s%s%s%s" %(str(ret), end_, msg, end_)
                     conn.send(send_prompt)
                     buffer = ""
-
                     break
 
     def handle_command(self, command):
@@ -256,7 +253,7 @@ def daemonize():
             # exit first parent
             sys.exit(0)
     except OSError, e:
-        print >>sys.stderr, "fork #1 failed: %d (%s)" % (e.errno, e.strerror)
+        #print >>sys.stderr, "fork #1 failed: %d (%s)" % (e.errno, e.strerror)
         sys.exit(1)
 
     os.chdir("/")
@@ -269,7 +266,7 @@ def daemonize():
             # exit from second parent, print eventual PID before
             sys.exit(0)
     except OSError, e:
-        print >>sys.stderr, "fork #2 failed: %d (%s)" % (e.errno, e.strerror)
+        
         sys.exit(1)
 
 
@@ -330,7 +327,7 @@ class controller(object):
 
 if __name__ == "__main__":
     if len(sys.argv) <= 2:
-        #daemonize()
+        daemonize()
         if not os.path.exists(os.path.dirname(selper_log)):
             try:
                 os.makedirs(os.path.dirname(selper_log))
