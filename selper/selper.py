@@ -9,6 +9,8 @@ import sys,os
 import logging
 import subprocess
 import signal
+import socket
+import time
 
 selper_name = "selper"
 run_dir = "/var/run/"
@@ -46,10 +48,11 @@ logger = logging.getLogger(selper_name)
 logger.setLevel(logging.WARNING)
 handler = logging.FileHandler(selper_log)
 handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-logger.setHandler(handler)
+logger.addHandler(handler)
 
 signals = []
 
+#最早使用方法，通过pid文件进行通信
 class service_handler(object):
     operator_signal = {"restart":12,"reload":1,"stop":3}
     @staticmethod
@@ -81,7 +84,7 @@ class service_handler(object):
     @staticmethod
     def clear_all():
         dir = "%s%s" %(run_dir, selper_name)
-        files = os.list(dir)
+        files = os.listdir(dir)
         for file in files:
             os.remove("%s/%s" %(dir, file))
 
@@ -107,7 +110,7 @@ class service_holder(object):
         self.proc.wait()
         
     def start(self):
-        array = command.split(' ')
+        array = self.command.split(' ')
         cmd_params = [i for i in array if i != '']
         self.proc = subprocess.Popen(cmd_params)
         if self.program_type != "service" and self.need_result:
@@ -132,19 +135,28 @@ class service_holder(object):
 
 class selper(object):
     def __init__(self, config_file = None):
-        if not conf_file:
-            conf_file = selper_conf
-        self.service_holders = get_services(config_file)
+        if not config_file:
+            config_file = selper_conf
+
+        self.config_file = config_file
+        self.service_holders = self.get_services(config_file)
+        self.start_all()
+        for p in self.service_holders:
+            print p.get_name, p.is_service, p.status()
+
+    def reload(self, signum, frame):
+        self.stop_all()
+        self.service_holders = []
+        self.service_holders = self.get_services(self.config_file)
 
         
     def start(self):
         self._build_server()
         self.loop()
-        signal.signal()
 
     def loop(self):
         while True:
-            conn, addr = handle_server()
+            conn, addr = self.handle_connect()
             if conn == None:
                 time.sleep(1)
                 continue
@@ -154,10 +166,14 @@ class selper(object):
                 buffer += conn.recv(1024)
                 if len(buffer) == 0:
                     time.sleep(1)
-                if buffer.stip().endswith(end_):
-                    command = buffer.stip()[:-2]
-                    self.handle_command(command)
+                if buffer.strip().endswith(end_):
+                    command = buffer.strip()[:-2]
+                    ret, msg = self.handle_command(command)
+                    send_prompt  = "%s%s%s%s" %(str(ret), end_, msg, end_)
+                    conn.send(send_prompt)
                     buffer = ""
+
+                    break
 
     def handle_command(self, command):
         s = command.split(" ")
@@ -169,8 +185,8 @@ class selper(object):
                 try:
                     call = getattr(service, oper)
                 except:
-                    log.error("")
-                    return False, ""
+                    log.error("no %s operation" %oper)
+                    return False, "no %s operation" %oper
                 call()
                 return True, ""
         return False, "no service named %s" %name
@@ -182,7 +198,7 @@ class selper(object):
         self.sock.listen(1)
         self.sock.setblocking(0)
 
-    def handle_server(self):
+    def handle_connect(self):
         conn, addr = None, None
         try:
             conn, addr = self.sock.accept()
@@ -202,16 +218,35 @@ class selper(object):
         conf_parser.read(config_file)
         secs = conf_parser.sections()
         for sec in secs:
-            command = conf_parser.get(sec,'command')
-            program_type = conf_parser.get(sec,'program_type')
-            need_result = conf_parser.get(sec,'need_result')
+            try:
+                command = conf_parser.get(sec,'command')
+            except ConfigParser.NoOptionError:
+                command = None
+            if not command:
+                continue
+
+            try:
+                program_type = conf_parser.get(sec,'program_type')
+            except ConfigParser.NoOptionError:
+                program_type = None
+
+            try:
+                need_result = conf_parser.get(sec,'need_result')
+            except ConfigParser.NoOptionError:
+                need_result = None
             p = service_holder(sec, command, program_type, need_result)
-    
+            service_holders.append(p)
+
         return service_holders
     
     def start_all(self):
         for p in self.service_holders:
             p.start()
+
+    def stop_all(self):
+        for p in self.service_holders:
+            p.stop()
+
 
 
 def daemonize():
@@ -238,6 +273,9 @@ def daemonize():
         sys.exit(1)
 
 
+def sys_exit(signum, frame):
+    sys.exit(1)
+
 #start services
 def main():
     args = sys.argv
@@ -246,14 +284,13 @@ def main():
     else:
         config_file = args[1]
     if not os.path.exists(config_file):
-        sys.exit(0)
+        sys.exit(1)
 
-    service_holders = get_services(config_file)
-    if process == []:
-        sys.exit(0)
+    instance = selper(config_file)
+    signal.signal(signal.SIGHUP, instance.reload)
+    signal.signal(signal.SIGINT, sys_exit)
 
-    for p in service_holders:
-        p.start()
+    instance.start()
 
 
 #print help
@@ -261,16 +298,44 @@ def main():
 def controller_help():
     pass
 
+
 #control services
-def controller():
-    name = sys.argv[1]
-    operator = sys.argv[2]
-    service_handler.service_operator(name, operator)
+class controller(object):
+
+    def __init__(self):
+        #self.check_service()
+        self.execute()
+
+    def connect_selper(self):
+        try:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.connect_ex(("127.0.0.1", port))
+        except Exception as e:
+            print("cannt connect to 127.0.0.1:%s, please check the selper start" %port)
+            sys.exit(1)
+
+    def execute(self):
+        self.connect_selper()
+        name = sys.argv[1]
+        operator = sys.argv[2]
+        self.sock.send("%s %s%s" %(name, operator, end_))
+        buf = self.sock.recv(1024)
+        rets = buf.split(end_)
+        if (rets[0] == "True"):
+            print("%s service %s [OK]" %(operator, name))
+        elif (rets[0] == "False"):
+            print("%s service %s Fail: [OK]" %(operator, name, rets[1]))            
+        self.sock.close()
+
 
 if __name__ == "__main__":
     if len(sys.argv) <= 2:
-        daemonize()
-        service_handler.clear_all()
+        #daemonize()
+        if not os.path.exists(os.path.dirname(selper_log)):
+            try:
+                os.makedirs(os.path.dirname(selper_log))
+            except Exception as e:
+                pass
         main()
     else : #manage the services
         controller()
